@@ -9,9 +9,11 @@ I built these with AI assistance; [How I worked with AI](#how-i-worked-with-ai) 
 exactly what was mine and what the AI wrote.
 
 **At a glance**
-- **A GPU cloth simulation, shipped and sold as a Godot plugin on [itch.io](ITCH_IO_LINK_HERE).** Built
-  on a GDC talk on predictive contacts; a crumpled pile settles with zero self-intersections in the demo
-  scene's configuration.
+- **A GPU cloth simulation, shipped and sold as a Godot plugin on
+  [itch.io](https://springautumnpavilion.itch.io/gocloth).** Built on a GDC talk on predictive contacts.
+  The released version is from my first period of work; after it, I went back and rebuilt
+  self-collision so that a crumpled pile settles with zero self-intersections in the demo scene's
+  configuration.
 - **An endless procedural city** on a hexagonal street grid, with procedurally drawn windows and
   fake lit rooms behind the glass.
 - **A character animation system** built on an inverse kinematics (IK) solver and keyframe system I
@@ -32,8 +34,10 @@ exactly what was mine and what the AI wrote.
 
 ## Cloth — GPU XPBD cloth for Godot 4
 
-**Shipped:** packaged with its own license and sold as a Godot plugin on [itch.io](ITCH_IO_LINK_HERE).
-Because it's a paid plugin, the rendering and scene-component files are withheld here;
+**Shipped:** packaged with its own license and sold as a Godot plugin on
+[itch.io](https://springautumnpavilion.itch.io/gocloth). The released plugin is the first-period version
+(see My goal below). The motion-gated self-collision and real-mesh testing described under My role
+came afterward, in the second period. Because it's a paid plugin, the rendering and scene-component files are withheld here;
 [`cloth/WITHHELD.md`](cloth/WITHHELD.md) explains what each one does, along with the reasoning behind
 the per-cloth settings.
 
