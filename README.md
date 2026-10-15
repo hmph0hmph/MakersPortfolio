@@ -9,11 +9,8 @@ I built these with AI assistance; [How I worked with AI](#how-i-worked-with-ai) 
 exactly what was mine and what the AI wrote.
 
 **At a glance**
-- **A GPU cloth simulation, shipped and sold as a Godot plugin on
-  [itch.io](https://springautumnpavilion.itch.io/gocloth).** Built on a GDC talk on predictive contacts.
-  The released version is from my first period of work; after it, I went back and rebuilt
-  self-collision so that a crumpled pile settles with zero self-intersections in the demo scene's
-  configuration.
+- **A GPU cloth simulation** with self-collision, sold as a Godot plugin on
+  [itch.io](https://springautumnpavilion.itch.io/gocloth).
 - **An endless procedural city** on a hexagonal street grid, with procedurally drawn windows and
   fake lit rooms behind the glass.
 - **A character animation system** built on an inverse kinematics (IK) solver and keyframe system I
@@ -21,6 +18,11 @@ exactly what was mine and what the AI wrote.
   walking, physical arm balance, and a procedural sword-slicing system.
 - **A ragdoll that learned to stand** with reinforcement learning, trained in a headless copy of the
   game's physics. It stands stably for over four minutes in the game.
+
+**Contents:** [Cloth](#cloth--gpu-xpbd-cloth-for-godot-4) · [City](#city-generation) ·
+[Character](#character--ik-animation-sword-slicing) · [Ragdoll](#ragdoll--learning-to-stand) ·
+[Timeline](#timeline) · [How I worked with AI](#how-i-worked-with-ai) ·
+[Credits](#credits-and-references)
 
 | Folder | System | Start reading at |
 |---|---|---|
@@ -35,10 +37,11 @@ exactly what was mine and what the AI wrote.
 ## Cloth — GPU XPBD cloth for Godot 4
 
 **Shipped:** packaged with its own license and sold as a Godot plugin on
-[itch.io](https://springautumnpavilion.itch.io/gocloth). The released plugin is the first-period version
-(see My goal below). The motion-gated self-collision and real-mesh testing described under My role
-came afterward, in the second period. Because it's a paid plugin, the rendering and scene-component files are withheld here;
-[`cloth/WITHHELD.md`](cloth/WITHHELD.md) explains what each one does, along with the reasoning behind
+[itch.io](https://springautumnpavilion.itch.io/gocloth). The released plugin is the first-period
+version (see My goal below). The motion-gated self-collision and real-mesh testing described under My
+role came afterward, in the second period. Because it's a paid plugin, the rendering and
+scene-component files are withheld here; [`cloth/WITHHELD.md`](cloth/WITHHELD.md) explains what
+each one does, along with the reasoning behind
 the per-cloth settings.
 
 Pure GDScript + GLSL compute on Godot's `RenderingDevice`; no engine modules. One dispatcher
@@ -53,9 +56,12 @@ velocity bookkeeping.
 decisions were made by testing on the real mesh.
 
 Where to look:
-- `debug_pierce_interval` + pass 18 — a GPU self-intersection counter, used as ground truth on the real mesh.
-- The `persistent_sidedness` / `fold_aware_exclusion` export comments — features built, measured, then turned off.
-- `_region_gain_from_motion` and the `region_motion_*` settings — fading region contacts as the cloth settles.
+- `debug_pierce_interval` + pass 18 — a GPU self-intersection counter, used as ground truth on the
+  real mesh.
+- The `persistent_sidedness` / `fold_aware_exclusion` export comments — features built, measured, then
+  turned off.
+- `_region_gain_from_motion` and the `region_motion_*` settings — fading region contacts as the cloth
+  settles.
 - The PosDeltas accumulator comment and pass 9 — why contact pushes are averaged once.
 
 ### My goal
@@ -81,17 +87,17 @@ I built this from Chris Lewin's GDC talk on predictive contacts, which I read an
 for every collision decision. Self-collision was added on top of an earlier version of the cloth built
 on Verlet integration and basic constraint iterations.
 
-- **Motion-gated self-collision: where I departed from the paper.** Gating contacts on the cloth's motion
-  isn't part of the paper's method. On my cloth the paper's approach created a tradeoff between aesthetics and capability:
-  one contact type (edge and corner "region" contacts) was the only thing that could catch a crease
-  folding through itself, but it also made settled cloth jitter and puff up. I ran a hand experiment:
-  let a pile settle with region contacts off, switch them on briefly, then off again. That gave zero
-  intersections and the lowest motion of anything I had tried, which told me region contacts only need to run
-  while the cloth is moving: only at high velocities do creases fold through themselves, and the
-  movement masks the low-level jitter while they are on. I designed the control scheme from that:
-  fade region contacts out as motion drops below thresholds I set (5 mm max, 0.5 mm mean per step),
-  keep them on while the real intersection count is high (added after a higher drop test left more
-  tangles behind), and hold a minimum strength until intersections reach zero. It
+- **Motion-gated self-collision: where I departed from the paper.** Gating contacts on the cloth's
+  motion isn't part of the paper's method. On my cloth the paper's approach created a tradeoff between
+  aesthetics and capability: one contact type (edge and corner "region" contacts) was the only thing
+  that could catch a crease folding through itself, but it also made settled cloth jitter and puff up.
+  I ran a hand experiment: let a pile settle with region contacts off, switch them on briefly, then
+  off again. That gave zero intersections and the lowest motion of anything I had tried, which told me
+  region contacts only need to run while the cloth is moving: only at high velocities do creases fold
+  through themselves, and the movement masks the low-level jitter while they are on. I designed the
+  control scheme from that: fade region contacts out as motion drops below thresholds I set (5 mm max,
+  0.5 mm mean per step), keep them on while the real intersection count is high (added after a higher
+  drop test left more tangles behind), and hold a minimum strength until intersections reach zero. It
   was the first configuration that settled cleanly.
 - **Cheap simulation, detailed render mesh.** I designed the core structure: simulate a low-resolution
   "cage" and attach a high-detail model to it by precomputing, once at load time, where each model
@@ -110,7 +116,8 @@ on Verlet integration and basic constraint iterations.
 ## City generation
 
 **Roads** (`cityGentest2.cs`, with `RoadNode`/`RoadEdge` in `cityGentest.cs`):
-1. Streaming — `_Process` → `WorldToHex` queues the hex under the camera; `ProcessQueueAsync` generates them.
+1. Streaming — `_Process` → `WorldToHex` queues the hex under the camera; `ProcessQueueAsync`
+   generates them.
 2. Layout — `GenerateHexagonAtAsync` lays a **spine** road across each hex, splitting it into two zones
    with different parallel-road spacing; streets (`DrawPerpLine`) end at the spine, forming T-junctions.
 3. Blocks and lots — `ProcessCellsAsync` splits cells into blocks and lots (storefront rows, towers,
@@ -119,7 +126,8 @@ on Verlet integration and basic constraint iterations.
    joins stems onto spines that an earlier hex already segmented.
 5. Intersections — `BuildIntersections` fits junction pads to nearby building corners;
    `MergeOverlappingIntersections` merges overlapping pads (SAT + union-find).
-6. Terrain — sampled only at intersections; `AssignCellGroundHeights` lifts blocks to their highest junction.
+6. Terrain — sampled only at intersections; `AssignCellGroundHeights` lifts blocks to their highest
+   junction.
 7. Road surface — `BuildRoadMesh`: junction pads, ribbons (`AddRoadRibbon`), raised sidewalks with
    rounded corners and ramps (`EmitRoundedCornerCell`, `EmitCornerRamps`), curbs, collision.
 
@@ -181,7 +189,8 @@ with exact numbers.
   average over everything it covers. Because the window pattern is generated from known numbers, I
   proposed "faking a mip map" (the same idea as analytically filtering a procedural texture): compute
   what fraction of the pixel's footprint is window and blend the window and wall colors by that fraction,
-  instead of supersampling. That analytic blur cut the shimmer a lot at medium range. For the rest I attacked
+  instead of supersampling. That analytic blur cut the shimmer a lot at medium range. For the rest
+  I attacked
   the pattern itself:
   - ribbon towers put windows on every other doubled floor, because if there is no high-frequency
     pattern to lose, there is nothing to alias;
@@ -246,13 +255,9 @@ system allows me to author specific animations that can be adapted for different
 
 ### My role
 
-The foundation of this project (the IK, the state machine and the keyframe core) predates my use of AI
-coding agents. It was built with web chat assistants (Gemini or ChatGPT): I pasted their code in, then
-wrote and rewrote a lot of it myself. Later features, starting with the sword, were built with
-progressively more AI help, including coding agents from 2026, from my designs.
-
 - **The inverse kinematics system (sophomore year, 2024–25).** It started as only a two-bone IK solver
-  in 3D space with joint constraints, and that stayed most of the work; I also wrote chain IK for the
+  in 3D space with joint constraints, built with a chatbot's help and a lot of my own debugging and
+  editing, and that stayed most of the work; I also wrote chain IK for the
   spine and neck, which was much easier to manage. It replaced Godot 4.4's built-in IK, which is
   deprecated, and became the base the other animation and character-control systems are built on.
   Left and right limbs are mirror images, so a solve that works on one side comes out inside-out on the
@@ -323,8 +328,8 @@ ragdoll project below.
 
 1. Godot (C#) exports the rig to `ragdoll.json`; a headless C++ harness (`trainer/src/`) builds the same
    Jolt physics world from it, and Python trains against the harness through ctypes.
-2. Parity is enforced: recorded Godot runs are replayed in the harness and observation, every reward
-   term and PD torque are compared term by term.
+2. Parity is enforced: recorded Godot runs are replayed in the harness, and the observations, reward
+   terms and PD torques are compared term by term.
 3. The policy outputs 72 actions (51 joint targets + 21 stiffness scales); a predictive stable-PD
    (proportional-derivative) controller (`godot/RagdollPD.cs`) with gains derived from the rig turns
    them into torques at 120 Hz.
@@ -384,7 +389,8 @@ ragdoll in the game.
   - Posture goals such as arms relaxed at idle, hips and chest facing forward, and natural foot angles.
 - **Finding what the numbers hid.** Training metrics often looked fine while the ragdoll looked wrong,
   so I judged every checkpoint by watching it in the game. The worst problems were mismatches between
-  what the training assumed and what actually happened in the game's physics. The game never gave the policy its facing direction;
+  what the training assumed and what actually happened in the game's physics. The game never gave
+  the policy its facing direction;
   fixing that brought it to a stable stand of over four minutes. And for 33 of the rig's 51 joint axes,
   the joint targets were mapped onto the mirror image of each joint's real range, so the network had
   learned to stand on a ragdoll that could barely bend its knees and couldn't bend its elbows at all.
