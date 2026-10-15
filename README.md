@@ -9,9 +9,9 @@ I built these with AI assistance; [How I worked with AI](#how-i-worked-with-ai) 
 exactly what was mine and what the AI wrote.
 
 **At a glance**
-- **A GPU cloth simulation, shipped and sold as a Godot plugin on itch.io.** Built on a GDC talk on
-  predictive contacts; a crumpled pile settles with zero self-intersections in the demo scene's
-  configuration.
+- **A GPU cloth simulation, shipped and sold as a Godot plugin on [itch.io](ITCH_IO_LINK_HERE).** Built
+  on a GDC talk on predictive contacts; a crumpled pile settles with zero self-intersections in the demo
+  scene's configuration.
 - **An endless procedural city** on a hexagonal street grid, with procedurally drawn windows and
   fake lit rooms behind the glass.
 - **A character animation system** built on an inverse kinematics (IK) solver and keyframe system I
@@ -32,8 +32,8 @@ exactly what was mine and what the AI wrote.
 
 ## Cloth — GPU XPBD cloth for Godot 4
 
-**Shipped:** packaged with its own license and sold as a Godot plugin on itch.io. Because it's a paid
-plugin, the rendering and scene-component files are withheld here;
+**Shipped:** packaged with its own license and sold as a Godot plugin on [itch.io](ITCH_IO_LINK_HERE).
+Because it's a paid plugin, the rendering and scene-component files are withheld here;
 [`cloth/WITHHELD.md`](cloth/WITHHELD.md) explains what each one does, along with the reasoning behind
 the per-cloth settings.
 
@@ -73,10 +73,22 @@ the cloth able to handle significantly more complex self-collision (the drop/pil
 
 ### My role
 
-I built this from Chris Lewin's GDC talk on predictive contacts, which I read and brought to the AI as
-the reference for every collision decision. Self-collision was added on top of an earlier version of
-the cloth built on Verlet integration and basic constraint iterations.
+I built this from Chris Lewin's GDC talk on predictive contacts, which I read and used as the reference
+for every collision decision. Self-collision was added on top of an earlier version of the cloth built
+on Verlet integration and basic constraint iterations.
 
+- **Motion-gated self-collision: where I departed from the paper.** Gating contacts on the cloth's motion
+  isn't part of the paper's method. On my cloth the paper's approach created a tradeoff between aesthetics and capability:
+  one contact type (edge and corner "region" contacts) was the only thing that could catch a crease
+  folding through itself, but it also made settled cloth jitter and puff up. I ran a hand experiment:
+  let a pile settle with region contacts off, switch them on briefly, then off again. That gave zero
+  intersections and the lowest motion of anything I had tried, which told me region contacts only need to run
+  while the cloth is moving: only at high velocities do creases fold through themselves, and the
+  movement masks the low-level jitter while they are on. I designed the control scheme from that:
+  fade region contacts out as motion drops below thresholds I set (5 mm max, 0.5 mm mean per step),
+  keep them on while the real intersection count is high (added after a higher drop test left more
+  tangles behind), and hold a minimum strength until intersections reach zero. It
+  was the first configuration that settled cleanly.
 - **Cheap simulation, detailed render mesh.** I designed the core structure: simulate a low-resolution
   "cage" and attach a high-detail model to it by precomputing, once at load time, where each model
   vertex sits on the cage. Simulation cost no longer depends on how detailed the garment is.
@@ -86,20 +98,10 @@ the cloth built on Verlet integration and basic constraint iterations.
 - **GPU pins.** I designed the grab system: a pin captures every vertex within a radius *on the GPU*
   when it switches on, stores each vertex's offset in the pin's frame, and carries it through any
   later move or rotation.
-- **Motion-gated self-collision.** One contact type was the only thing that could fix a crease folded
-  through itself, but it also made settled cloth jitter. I was fighting a tradeoff between aesthetics
-  and capabilities for the cloth. A hand experiment of mine showed it only needs to run while the cloth
-  is moving: only at high velocities do creases fold through themselves. The conditional application of
-  the contact type allowed the jitter to disappear when the cloth was supposed to be still, and the
-  movement masked the low-level jitter when the cloth did not meet the stillness condition. I designed
-  the control scheme from that: fade it out as motion drops below thresholds I set, keep it on while
-  the real intersection count is high, and hold a minimum until intersections reach zero. It was the
-  first configuration that settled cleanly.
-- **Testing as the ground truth.** I designed a standard test (hang the cloth, release it, let it
-  pile), ran every test on the real mesh, and caught the AI's wrong diagnoses repeatedly. The AI
-  attempted to write its own tests, which did not match the GPU simulation I was watching, so I ended
-  up hand testing every change myself. I performed multiple trials at different settings to identify
-  potential causes of, and solutions to, unwanted behavior.
+- **Testing on the real thing.** I designed the standard test (hang the cloth, release it, let it
+  pile) and judged every change on the real mesh with a GPU self-intersection counter, running
+  repeated trials at different settings. The CPU test mirrors couldn't reproduce what the GPU did at
+  the real mesh's resolution, so they were only a first check.
 
 ## City generation
 
@@ -148,49 +150,59 @@ with exact numbers.
   generating as the player moves, much like Minecraft's chunks, and the angled streets give it a
   futuristic look.
 
+- **Roads that sit on terrain.** Making every road follow the terrain would need far more geometry. My reasoning came from real cities: intersections are flat, so I made every
+  intersection a flat pad and every road between two intersections a straight ramp, eased at both
+  ends, with no terrain sampling in between. Ramps get more subdivisions where they curve more and
+  where the height change per length is larger. Each intersection pad's shape is fitted to the
+  nearest building corner in each quadrant, overlapping pads merge into one shape at one height, and
+  each block's buildings start at the height of its highest corner intersection. I also designed how
+  neighboring road pieces are stitched together, the raised sidewalks and corner ramps, and the
+  curb-edge construction.
+
 - **Buildings.** I designed the tiered tower rules (stacked sections, setbacks, real floor heights,
   sloped caps, beveled corners) and all four facade styles: grouped traditional windows, recessed
   ribbon bands, full glass curtain walls, and concrete "shell" towers. For the shells, I wrote the
-  algorithm for the jagged 45° grooves that wrap around all four faces as pseudocode.
+  algorithm for the jagged 45° grooves that wrap around all four faces as pseudocode. I also designed
+  the layout of the fake rooms behind the glass (rooms merging across bevels and dissolving walls, a
+  ceiling light grid), on top of interior mapping, a known technique the AI implemented.
 
-  The towers are very large to fit the futuristic style, so one of the biggest challenges was the
-  **moiré effect**: from a distance, hundreds of small windows become a high-frequency pattern that
-  aliases into shimmering bands. I reduced it by making windows larger, spacing them further apart,
-  and fading out the gaps between windows and other fine material detail as the player moves away.
+- **The moiré problem.** The towers are very large to fit the futuristic style, so from a distance
+  hundreds of small windows become a high-frequency pattern that aliases into shimmering bands. The
+  first attempt, fading the windows and anti-aliasing them, only darkened them. I worked out that this
+  is really two problems depending on distance. While a window is still more than a pixel wide, the
+  shimmer comes from jagged edges between window and wall, which ordinary anti-aliasing can handle.
+  Once a window is smaller than a pixel, it becomes a pure sampling problem: each pixel lands on
+  either a window or a wall almost at random, so turning the camera slightly flips between blinding
+  window and plain wall, and no edge smoothing can fix that. The right color for such a pixel is the
+  average over everything it covers. Because the window pattern is generated from known numbers, I
+  proposed "faking a mip map" (the same idea as analytically filtering a procedural texture): compute what fraction of the pixel's footprint is window and blend the
+  window and wall colors by that fraction, instead of supersampling. That analytic blur cut the
+  shimmer a lot at medium range. For the rest I attacked the pattern itself:
+  - ribbon towers put windows on every other doubled floor, because if there is no high-frequency
+    pattern to lose, there is nothing to alias;
+  - section heights snap to multiples of four floors, so a section never ends partway through a window;
+  - the transition from the detailed to the flat building mesh finishes before the switch, so the
+    recesses don't pop;
+  - after tracing a flickering dashed line on glass grooves to a squashed reflection of the sun along
+    the crease between faces (specular aliasing), I replaced the normal-mapped grooves with a slightly
+    different material color that fades with distance.
 
-- **Fake rooms behind the glass.** The idea was mine; the technique (interior mapping) is a known one
-  the AI implemented. On top of it I designed corner rooms that merge across bevels, room depth matched
-  to the neighboring face, a second pattern that dissolves walls so rooms merge, and an office ceiling
-  grid with lights every third row and fourth column. When the AI said shell towers couldn't have
-  rooms, I pointed out that their glass is just an inner box under the shell, and it worked.
-
-- **Roads that sit on terrain.** To handle uneven terrain the way a real city does, I decided
-  intersections must stay flat, with straight ramps between them, and designed how each
-  intersection's shape is fitted to the corners of the nearest buildings. I also designed how
-  neighboring road pieces are stitched together, the raised sidewalks and corner ramps, and the
-  curb-edge construction.
+- **The road connectivity test.** Once the road graph was built from the drawn streets and split
+  incrementally as each new hex loaded, I needed to see where streets were actually connected in the
+  graph, not just drawn touching. I designed a color flood: a random lane turns yellow, and every
+  frame any white lane touching a yellow lane turns yellow while yellow lanes turn red. Red lanes hold
+  for two extra frames before going white, because streets loop around and the wave otherwise broke
+  into yellow-and-red stripes. It's a breadth-first search you can watch spread across the map. It
+  paid off later: some T-junctions were missing their intersection pads, and slowing the flood to
+  1/16 speed confirmed the graph really was disconnected at those spots. A hex generated later could
+  end a street on a road an earlier hex had already split into segments, and that road was never
+  split again at the new endpoint. The fix welds those dead ends onto the existing roads after
+  segmentation (`WeldDeadEndsOntoEdges`).
 
 - **Lens warp.** I designed a "dynamic perspective" effect inspired by anime: both screen axes bend
   while lines through the center stay straight, with a movable center and a mode where you bend the
   sides of an on-screen rectangle. I built it for a different project; the generated city was the
   best place to test it.
-
-- **Debugging.** I built tools such as a color flood that spreads through the road graph to check
-  connectivity, and used them to find bugs the AI had missed, including a whole-city regeneration
-  bug and windows stretched along slanted faces. Two examples:
-  - *Missing T-junctions.* Some T-junctions had no intersection pad at all. Using the color flood and
-    position prints, I traced it to side streets that ended exactly on a dividing street but were
-    treated as dead ends, and pushed the investigation toward how a dead end could form there in the
-    first place. The cause was incremental generation: a hex generated later could end a street on a
-    dividing street that an earlier hex had already split into segments, and that street was never
-    split again at the new endpoint. Several fixes that only acted while a street was being split
-    failed in testing; the one that worked runs afterward and welds dead ends onto the existing roads
-    (`WeldDeadEndsOntoEdges`, implemented by the AI).
-  - *Rooms at the wrong depth.* The fake rooms behind the glass looked too deep. I asked whether the
-    depth was being measured from the center of the building, and it was: each room's box started at
-    the building's centerline instead of at the glass. Anchoring it at the glass fixed the depth. The
-    same investigation turned up a second bug, found by the AI: wall widths stored in 8-bit vertex
-    color were being clipped, so they moved to a float channel.
 
 ## Character — IK, animation, sword slicing
 
@@ -231,36 +243,26 @@ system allows me to author specific animations that can be adapted for different
 
 The foundation of this project (the IK, the state machine and the keyframe core) predates my use of AI
 coding agents. It was built with web chat assistants (Gemini or ChatGPT): I pasted their code in, then
-wrote and rewrote a lot of it myself, since the early assistants got plenty wrong. Later features,
-starting with the sword, were built with progressively more AI help, including coding agents from
-2026, from my designs.
+wrote and rewrote a lot of it myself. Later features, starting with the sword, were built with
+progressively more AI help, including coding agents from 2026, from my designs.
 
 - **The inverse kinematics system (sophomore year, 2024–25).** It started as only a two-bone IK solver
   in 3D space with joint constraints, and that stayed most of the work; I also wrote chain IK for the
-  spine and neck, which was much easier to manage. A chatbot helped me get started; I did much of the
-  debugging and editing myself, and later improvements used AI more heavily. It replaced Godot 4.4's
-  built-in IK, which is deprecated, and became the base the other animation and character-control
-  systems are built on.
-- **Mirrored limbs.** Left and right limbs are mirror images of each other, so the same solve that
-  works on one side comes out inside-out on the other. I handled it with a flag (`ReflectOption`) that
-  flips the sign of the basis axes for the mirrored side, plus a second flag (`AxisOption`) that
-  switches between bone-axis conventions; that is why `IKSolverTwoBone` has nested `if` conditions
-  choosing between basis constructions. The same problem came back later in the wrist: the left wrist
-  turned upside-down, but only during a swing. I ruled out the arm with a rainbow UV debug shader,
-  guessed that the wrist solver was changing its basis temporarily, and said that only one or two
-  axes should need flipping. The fix was exactly that, two negated axes, plus my suggestion to run the
-  wrist's deviation sweep in reverse when it is mirrored.
-- **The state machine.** I built it alongside my first character controller. A chatbot gave me the
-  skeleton, a pattern I already knew from a Unity tutorial years earlier. I designed the actual
-  states, the conditions for entering and leaving each one, and what happens during them. Once the
-  keyframe system replaced my first leg-movement approach, the AI cleaned up the leftover bookkeeping.
+  spine and neck, which was much easier to manage. It replaced Godot 4.4's built-in IK, which is
+  deprecated, and became the base the other animation and character-control systems are built on.
+  Left and right limbs are mirror images, so a solve that works on one side comes out inside-out on the
+  other: a flag (`ReflectOption`) flips the sign of the basis axes for the mirrored side and another
+  (`AxisOption`) switches bone-axis conventions, which is why `IKSolverTwoBone` has nested `if`
+  conditions choosing between basis constructions.
+- **The state machine.** I built it alongside my first character controller, from a chatbot-made
+  skeleton of a pattern I already knew from a Unity tutorial years earlier. I designed the actual
+  states, the conditions for entering and leaving each one, and what happens during them.
 - **The keyframe animation system (early junior year).** A chatbot gave me the starting structure; I
   heavily edited it and wrote many of my own functions and scripts, including the mirrored ("derived")
-  keyframes. Claude later made small edits while I was getting walking to work on slopes and stairs.
-  About 96% of the keyframe code in this folder is line-for-line identical to my version from before
-  my mid-2026 coding-agent work on this project (compared against a snapshot taken when that work
-  began). I designed it around IK targets instead of bone rotations, inspired by David Rosen's GDC talk
-  *Animation Bootcamp: An Indie Approach to Procedural Animation*:
+  keyframes. About 96% of the keyframe code in this folder is line-for-line identical to my version
+  from before my mid-2026 coding-agent work on this project (compared against a snapshot taken when
+  that work began). I designed it around IK targets instead of bone rotations, inspired by David Rosen's
+  GDC talk *Animation Bootcamp: An Indie Approach to Procedural Animation*:
   - keyframes store foot and knee targets plus which feet are planted;
   - mirrored keyframes reuse existing ones through index remapping instead of duplicating data;
   - animations reference keyframes by string ID, looked up in a registry, so keyframes never hold
@@ -272,21 +274,12 @@ starting with the sword, were built with progressively more AI help, including c
 - **Procedural sword slicing.** I designed the first version: held stances blended by cursor position,
   a slice plane built from the player's facing and the mouse stroke, and the arm geometry for reaching
   it. I described that geometry plane by plane, and an AI assistant (in Antigravity) wrote the plane
-  and slicing math. My roadmap for the next stage became the features a coding agent later
-  implemented: slicing from the left side, the plane following the character, body twist, and
-  anticipation. With the AI I then designed:
+  and slicing math. My roadmap for the next stage became the features that came next: slicing from the
+  left side, the plane following the character, body twist, and anticipation. I then designed:
   - a windup that runs the strike backwards first ("draw back = power");
   - a distance-based return to stance that a new swipe can interrupt;
   - the strike's starting elbow position, which I worked out as the intersection of two circles;
   - a spine turn based on how my own body moves when I swing.
-
-  Turning the spine into the swing caused a bug I had to chase: how far the character leaned back
-  depended on which way it was facing. With the spine drive switched off, I rotated the spine targets
-  by hand in the running game and found that leaning straight back took about 9 units on one axis and
-  6 on another, which pointed to a rotation being applied in a tilted frame; the lean was changed to a
-  single-axis pitch. When the AI's next three fixes still left it depending on facing, I told it to
-  find out why none of them had worked. The root cause: a world-space rotation was being applied to
-  local poses, which only gives the same result for turning left and right, not for leaning.
 
 - **Walking on terrain.** I designed how the walk cycle adapts to the ground:
   - shear the whole step on slopes;
@@ -296,8 +289,9 @@ starting with the sword, were built with progressively more AI help, including c
 
 - **Balance.** I designed arms that counter the body's angular momentum. I made the arms real pendulums
   whose muscles hold them up with torques computed from gravity at rest, the way a physics class solves
-  static equilibrium. I also caught the AI's physics mistakes: it claimed heavier objects should swing
-  more, and it treated rotating body parts as points.
+  static equilibrium. Body parts are modeled as shapes with their own rotational inertia rather than
+  points, because a turning hip carries angular momentum a point mass would miss, and a heavier carried
+  object makes the arm swing less, not more.
 
 This balance work was the start of a bigger goal: a **universal character controller** that holds up in
 any situation and reacts physically to the world, not just plays back animation. Hand-coding a physical
@@ -343,35 +337,36 @@ stages:
    hits, and recover, all as one general controller. This stage is next.
 
 The AI wrote nearly all of this code, including the physics harness, the controllers and the training
-algorithms. I set the direction, designed the training, and was the only one who could watch the
-ragdoll and see what it was really doing.
+algorithms. I set the direction, designed the training, and judged every result by watching the
+ragdoll in the game.
 
 - **Direction.** The physics ragdoll was my idea. I wrote its rules:
   - bones that never stretch;
   - joints actively driven toward a pose, not springs;
   - a hip that stays steady against the body's own forces but gets thrown by a real hit.
 
-  When hand-tuned motor control kept failing, I proposed training a neural network, after the AI had
-  advised against it. I also insisted on an exact headless copy of the game's physics for training, so
-  a policy would behave the same in the game.
+  When hand-tuned motor control kept failing, I decided to train a neural network instead. I also
+  decided training had to run on an exact headless copy of the game's physics, so a trained policy
+  behaves the same in the game as it did in training.
 - **The rig.** I placed every collider, set all 21 joints' ranges with a tuning tool I designed, and
-  added joints to mimic shoulder blades after researching how real shoulders move in order to add
-  realism and more expression to character movements.
+  added joints to mimic shoulder blades after researching how real shoulders move, to add realism and
+  more expression to character movements.
 - **Training design.** Several of the ideas that got the ragdoll standing were mine:
-  - A flat reward for every tick it stays up (later scaled by posture, with a floor), which the AI's own
-    plan had ruled out. It more than tripled episode length.
+  - A flat reward for every tick it stays up (later scaled by posture, with a floor). My reasoning: if
+    the termination rules define failure well, rewarding survival alone should be enough to teach
+    balance. It more than tripled episode length.
   - Random starting spin, mostly on the leg bones, so it learns from varied starts without spawning in
     impossible poses.
   - Termination rules that end an episode when the ragdoll uses a bad strategy, such as spinning more
     than 90°, leaning back, or letting its center of mass leave its feet. Each one comes with a
     curriculum that tightens it automatically as the policy improves.
   - Posture goals such as arms relaxed at idle, hips and chest facing forward, and natural foot angles.
-- **Finding what the numbers hid.** Training metrics often looked fine while the ragdoll looked wrong.
-  Watching it in the game, I found bugs that no metric caught: balance credit counted any contact, not
-  just the feet; training never actually resumed from saved progress; and the game never gave the
-  policy its facing direction, which a fix brought to a stable stand of over four minutes. The biggest
-  one came from a question of mine: I asked whether a joint bug was limited to the knees. It turned
-  out 33 of the rig's 51 joint axes could only reach part of their range.
+- **Finding what the numbers hid.** Training metrics often looked fine while the ragdoll looked wrong,
+  so I judged every checkpoint by watching it in the game. The worst problems were mismatches between
+  what the training assumed and what actually happened in the game's physics. The game never gave the policy its facing direction;
+  fixing that brought it to a stable stand of over four minutes. And for 33 of the rig's 51 joint axes,
+  the joint targets were mapped onto the mirror image of each joint's real range, so the network had
+  learned to stand on a ragdoll that could barely bend its knees and couldn't bend its elbows at all.
 
 ---
 
@@ -413,19 +408,16 @@ My work fell into three parts:
   gets simulated and what only gets drawn, the order things happen in, which rules produce the result
   I wanted. I usually gave these as step-by-step procedures, often with exact numbers. When something
   didn't behave the way I needed, I worked out a different way to structure it. I have a strong
-  understanding of many concepts in game development. For example, I understand how to work with the
-  architecture of compute shaders from my experience with screen-space shaders; however, it is much
-  faster to delegate actually writing a compute shader to an agent. Using the same example, I lack more
-  advanced knowledge on the topic, such as actually managing buffers properly on the RenderingDevice
-  that Godot uses (which lacks in-depth documentation and forum posts from other people debugging it).
-- **Debugging.** I often traced a bug to its source from the behavior alone. Watching how something
-  went wrong, I could guess where the problem started, such as a specific function, a specific commit,
-  or a value read from the wrong frame of reference. Many of the hardest bugs in these projects were
-  found that way, including several where the AI's own diagnosis was wrong and I had to argue it back
-  to the real cause.
-- **Testing.** The AI could not see the game, but I could. I ran every change in the engine, built
-  debug views to show what was really happening, and designed experiments to pin down behavior that
-  was especially hard to trace.
+  understanding of many concepts in game development. For example, I understand the architecture of
+  compute shaders from my experience with screen-space shaders, though not lower-level details like
+  managing buffers on the RenderingDevice that Godot uses, which has little documentation; for that
+  kind of work, delegating the writing to an agent was much faster.
+- **Debugging.** I often traced a bug to its source from the behavior alone, such as a specific
+  function, a specific commit, or a value read from the wrong frame of reference. When a problem was
+  hard to see, I built a way to see it: a color flood through the road graph, a GPU self-intersection
+  counter for the cloth, debug views for the IK, terrain rays and slice plane.
+- **Testing.** The AI could not see the game, but I could. I ran every change in the engine and
+  designed experiments to pin down behavior that was especially hard to trace.
 
 Each project's "My role" section says specifically what came from me.
 
