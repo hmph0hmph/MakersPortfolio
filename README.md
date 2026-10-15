@@ -150,14 +150,14 @@ with exact numbers.
   generating as the player moves, much like Minecraft's chunks, and the angled streets give it a
   futuristic look.
 
-- **Roads that sit on terrain.** Making every road follow the terrain would need far more geometry. My reasoning came from real cities: intersections are flat, so I made every
-  intersection a flat pad and every road between two intersections a straight ramp, eased at both
-  ends, with no terrain sampling in between. Ramps get more subdivisions where they curve more and
-  where the height change per length is larger. Each intersection pad's shape is fitted to the
-  nearest building corner in each quadrant, overlapping pads merge into one shape at one height, and
-  each block's buildings start at the height of its highest corner intersection. I also designed how
-  neighboring road pieces are stitched together, the raised sidewalks and corner ramps, and the
-  curb-edge construction.
+- **Roads that sit on terrain.** Making every road follow the terrain would need far more geometry.
+  My reasoning came from real cities: intersections are flat, so I made every intersection a flat pad
+  and every road between two intersections a straight ramp, eased at both ends, with no terrain sampling
+  in between. Ramps get more subdivisions where they curve more and where the height change per length
+  is larger. Each intersection pad's shape is fitted to the nearest building corner in each quadrant,
+  overlapping pads merge into one shape at one height, and each block's buildings start at the height
+  of its highest corner intersection. I also designed how neighboring road pieces are stitched together,
+  the raised sidewalks and corner ramps, and the curb-edge construction.
 
 - **Buildings.** I designed the tiered tower rules (stacked sections, setbacks, real floor heights,
   sloped caps, beveled corners) and all four facade styles: grouped traditional windows, recessed
@@ -175,9 +175,10 @@ with exact numbers.
   either a window or a wall almost at random, so turning the camera slightly flips between blinding
   window and plain wall, and no edge smoothing can fix that. The right color for such a pixel is the
   average over everything it covers. Because the window pattern is generated from known numbers, I
-  proposed "faking a mip map" (the same idea as analytically filtering a procedural texture): compute what fraction of the pixel's footprint is window and blend the
-  window and wall colors by that fraction, instead of supersampling. That analytic blur cut the
-  shimmer a lot at medium range. For the rest I attacked the pattern itself:
+  proposed "faking a mip map" (the same idea as analytically filtering a procedural texture): compute
+  what fraction of the pixel's footprint is window and blend the window and wall colors by that fraction,
+  instead of supersampling. That analytic blur cut the shimmer a lot at medium range. For the rest I attacked
+  the pattern itself:
   - ribbon towers put windows on every other doubled floor, because if there is no high-frequency
     pattern to lose, there is nothing to alias;
   - section heights snap to multiples of four floors, so a section never ends partway through a window;
@@ -271,15 +272,31 @@ progressively more AI help, including coding agents from 2026, from my designs.
   - transitions may only start at legal frames and are blocked mid-transition;
   - the planted foot's movement drives the body, so feet never slide.
 
-- **Procedural sword slicing.** I designed the first version: held stances blended by cursor position,
-  a slice plane built from the player's facing and the mouse stroke, and the arm geometry for reaching
-  it. I described that geometry plane by plane, and an AI assistant (in Antigravity) wrote the plane
-  and slicing math. My roadmap for the next stage became the features that came next: slicing from the
-  left side, the plane following the character, body twist, and anticipation. I then designed:
-  - a windup that runs the strike backwards first ("draw back = power");
-  - a distance-based return to stance that a new swipe can interrupt;
-  - the strike's starting elbow position, which I worked out as the intersection of two circles;
-  - a spine turn based on how my own body moves when I swing.
+- **Procedural sword slicing.** The first version had held stances blended by cursor position and a
+  slice plane built from the player's facing and the mouse stroke. The hardest question was where the
+  elbow should go during a cut. I worked most of that out physically, mimicking slices with a thin
+  bamboo cane, then turned the motion into geometry and described it plane by plane; an AI assistant
+  (in Antigravity) wrote the math.
+  - *Where the swing ends.* The area the arms can reach in front of the body is a box. Treating each
+    side of the box as a wall, the slice plane meets the wall along a line, and the swing ends at the
+    point on that line exactly one straight arm's length from the shoulder.
+  - *Where the elbow travels.* A swing ends with a straight arm and the hand on the slice plane, so at
+    the end the elbow sits a fixed fraction of the way from the shoulder to that plane (the upper arm's
+    share of the whole arm's length). I kept the elbow on a plane parallel to the slice plane at that
+    fraction for the whole strike. Because the upper arm has a fixed length, that leaves a single circle
+    of possible elbow positions, the "swing circle." The strike sweeps the elbow around it while the
+    forearm straightens, so the hand stays on the slice plane.
+  - *Where the elbow starts.* The hand's starting point, the shoulder and the two bone lengths define a
+    second circle of possible elbow positions. The starting elbow has to satisfy both, so it is where
+    the two circles meet.
+  - *Timing and power.* The forearm finishes straightening exactly as the swing completes, not before.
+    Drawing the arm back gives the blade more distance to accelerate, so the windup runs the strike
+    backwards first. And from swinging a two-handed sword myself, I found that without turning the
+    spine the blade stops short at a border, so the upper spine winds 45° against the cut and turns
+    90° through it, with the hips moving half as much.
+
+  After that came slicing from the left side, the plane following the character as it moves, and a
+  distance-based return to stance that a new swipe can interrupt.
 
 - **Walking on terrain.** I designed how the walk cycle adapts to the ground:
   - shear the whole step on slopes;
