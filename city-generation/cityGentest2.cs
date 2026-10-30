@@ -450,22 +450,17 @@ public partial class cityGentest2 : Node3D
             lobbyPool[i] = lobbyInst;
         }
 
-        float vHeight = GetViewport().GetVisibleRect().Size.Y;
-        float mapSize = vHeight * 0.9f;
-
         minimapBg = new ColorRect();
-        minimapBg.Size = new Vector2(mapSize + 4, mapSize + 4);
-        minimapBg.Position = new Vector2((GetViewport().GetVisibleRect().Size.X - minimapBg.Size.X) / 2f, (vHeight - minimapBg.Size.Y) / 2f);
         minimapBg.Color = Colors.White;
         minimapBg.Visible = false;
 
         minimapCanvas = new MinimapCanvas2();
         minimapCanvas.CityGen = this;
         minimapCanvas.Position = new Vector2(2, 2);
-        minimapCanvas.Size = new Vector2(mapSize, mapSize);
         minimapCanvas.ClipContents = true;
 
         minimapBg.AddChild(minimapCanvas);
+        ApplyMinimapLayout();
 
         CanvasLayer uiLayer = new CanvasLayer();
         uiLayer.AddChild(minimapBg);
@@ -4479,6 +4474,29 @@ public partial class cityGentest2 : Node3D
         cell.Properties.Add(prop);
     }
 
+    private bool debugDisableAA = false;
+    private bool minimapFullScreen = false;
+
+    // Sizes the minimap: a centred square at 90% of the screen height, or (F) the whole screen. The canvas
+    // scales the map by its width, so the full-screen map keeps the same zoom across and shows more top to bottom.
+    private void ApplyMinimapLayout()
+    {
+        Vector2 view = GetViewport().GetVisibleRect().Size;
+        if (minimapFullScreen)
+        {
+            minimapBg.Size = view;
+            minimapBg.Position = Vector2.Zero;
+        }
+        else
+        {
+            float mapSize = view.Y * 0.9f;
+            minimapBg.Size = new Vector2(mapSize + 4, mapSize + 4);
+            minimapBg.Position = (view - minimapBg.Size) / 2f;
+        }
+        minimapCanvas.Size = minimapBg.Size - new Vector2(4, 4);
+        minimapCanvas.QueueRedraw();
+    }
+
     public override void _Input(InputEvent @event)
     {
         if (@event is InputEventKey keyEvent && keyEvent.Pressed)
@@ -4504,6 +4522,21 @@ public partial class cityGentest2 : Node3D
             if (!keyEvent.Echo && keyEvent.Keycode == Key.M)
             {
                 if (minimapBg != null) minimapBg.Visible = !minimapBg.Visible;
+            }
+
+            // F toggles the minimap between its centred square and the whole screen (and opens it if closed).
+            if (!keyEvent.Echo && keyEvent.Keycode == Key.F && minimapBg != null)
+            {
+                minimapFullScreen = !minimapFullScreen;
+                if (minimapFullScreen) minimapBg.Visible = true;
+                ApplyMinimapLayout();
+            }
+
+            // _ (Shift + minus) hides or shows the key-bindings box on the minimap.
+            if (!keyEvent.Echo && keyEvent.Unicode == '_' && minimapCanvas != null)
+            {
+                minimapCanvas.ShowKey = !minimapCanvas.ShowKey;
+                minimapCanvas.QueueRedraw();
             }
             if (!keyEvent.Echo && keyEvent.Keycode == Key.V)
             {
@@ -4536,6 +4569,19 @@ public partial class cityGentest2 : Node3D
                 if (linesInstance != null) linesInstance.Visible = !linesInstance.Visible;
             }
 
+            // K toggles the moire fixes (debug_disable_aa: analytic anti-aliasing plus the distance fades)
+            // on every building material, for before/after shots.
+            if (!keyEvent.Echo && keyEvent.Keycode == Key.K)
+            {
+                debugDisableAA = !debugDisableAA;
+                var mats = new List<Material> { bldgMatCyan, bldgMatOrange, bldgMatLimeGreen, bldgMatMetal, bldgMatPink, bldgMatShell };
+                mats.AddRange(capMaterials.Values);
+                mats.AddRange(solidMaterials.Values);
+                foreach (Material m in mats)
+                    if (m is ShaderMaterial sm) sm.SetShaderParameter("debug_disable_aa", debugDisableAA);
+                GD.Print("Moire fixes: " + (debugDisableAA ? "off" : "on"));
+            }
+
             // C prints the camera's world position - handy for lining a debug print up with what you're
             // looking at (e.g. confirming which junction/dead-end is under the camera).
             if (!keyEvent.Echo && keyEvent.Keycode == Key.C)
@@ -4552,7 +4598,7 @@ public partial class cityGentest2 : Node3D
                 if (keyEvent.Keycode == Key.Right) minimapCanvas.MapOffset.X += panSpeed;
 
                 if (keyEvent.Keycode == Key.Equal) minimapCanvas.Zoom = Mathf.Min(minimapCanvas.Zoom * 1.25f, 50f);
-                if (keyEvent.Keycode == Key.Minus) minimapCanvas.Zoom = Mathf.Max(minimapCanvas.Zoom / 1.25f, 1.0f);
+                if (keyEvent.Keycode == Key.Minus && !keyEvent.ShiftPressed) minimapCanvas.Zoom = Mathf.Max(minimapCanvas.Zoom / 1.25f, 1.0f);
             }
         }
 
@@ -4948,6 +4994,7 @@ public partial class MinimapCanvas2 : Control
     public Vector2 MapOffset = Vector2.Zero;
     // 0=off, 1=PerlinH, 2=PerlinV, 3=VoronoiH, 4=VoronoiV, 5=density, 6=superskyscraper, 7=terrain height
     public int VisMode = 0;
+    public bool ShowKey = true; // toggled by _
 
     public override void _Draw()
     {
@@ -5187,15 +5234,26 @@ public partial class MinimapCanvas2 : Control
                 "B - buildings",
                 "L - road debug lines",
                 "T - test graph connectivity (colour flood)",
+                "K - moire fixes off / on (before/after)",
                 "C - print camera position",
+                "F - full-screen minimap",
                 "Arrows - pan     + / - - zoom",
+                "_ - hide this key",
             };
             Vector2 kPos = new Vector2(10, 160);
-            DrawRect(new Rect2(kPos, new Vector2(280, 16 + keys.Length * 20)), new Color(0, 0, 0, 0.7f));
-            for (int i = 0; i < keys.Length; i++)
+            if (ShowKey)
             {
-                DrawString(legFont, kPos + new Vector2(10, 20 + i * 20), keys[i],
-                           HorizontalAlignment.Left, -1, 14, Colors.White);
+                DrawRect(new Rect2(kPos, new Vector2(280, 16 + keys.Length * 20)), new Color(0, 0, 0, 0.7f));
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    DrawString(legFont, kPos + new Vector2(10, 20 + i * 20), keys[i],
+                               HorizontalAlignment.Left, -1, 14, Colors.White);
+                }
+            }
+            else
+            {
+                DrawString(legFont, kPos + new Vector2(10, 14), "show key: _",
+                           HorizontalAlignment.Left, -1, 11, new Color(1, 1, 1, 0.6f));
             }
         }
     }

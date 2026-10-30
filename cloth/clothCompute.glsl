@@ -16,7 +16,7 @@
 // order is defined by the call sequence in clothSimDispatch.gd::_physics_process:
 //
 //   13/14  Grab / release dynamic pins (only on the frame `active` flips)
-//   0      Integration: predict positions, apply gravity and effectors
+//   0      Integration: predict positions, apply gravity, effectors and air drag
 //   2      Clear the spatial hash grid
 //   3      Populate the spatial hash grid (swept bounds or centroid; see swept_broadphase)
 //   11     Clear per-vertex contact counts
@@ -215,6 +215,15 @@ layout(set = 0, binding = 23, std430) restrict readonly buffer OwnerTri { int ow
 // part in this branch and cannot be made inconsistent by the target switching.
 layout(set = 0, binding = 24, std430) restrict readonly buffer ClothCurvatureFloor { float cloth_curvature_floor[]; };
 
+// Air drag coefficient k (1/m) of the cloth a vertex belongs to, indexed like cloth_friction. 0 = no
+// drag. The dispatcher derives it from the ClothInstance's air_terminal_speed as 9.81 / speed^2.
+layout(set = 0, binding = 25, std430) restrict readonly buffer ClothAirDrag { float cloth_air_drag[]; };
+
+// The cage's smoothed tangent frame, 6 floats per vertex (tangent xyz, normal xyz), written by
+// physicsTangentsFinal.glsl at the END of each frame, so pass 0 sees the previous frame's normals.
+// Read here only for air drag. Zero until the first frame has finished.
+layout(set = 0, binding = 26, std430) restrict readonly buffer TangentsFinal { float tangents_final[]; };
+
 // Friction coefficient of the cloth a vertex belongs to.
 float vertex_friction(uint v) {
     return cloth_friction[uint(max(rest_positions[v].w, 0.0))];
@@ -292,6 +301,11 @@ layout(push_constant, std430) uniform Params {
 //
 // MUST match MAX_CONTACTS_PER_VERTEX in clothSimDispatch.gd, which sizes the buffer.
 // Cost is vertex_count * this * 12 floats.
+// Air drag across a surface, as a fraction of the drag through it. A perfectly flat plate has far
+// less, but real cloth is never flat, and with none at all a patch moving edge-on would feel no air
+// whatsoever. At 0.05 an edge-on patch settles at roughly 4.5x its flat-falling speed.
+const float AIR_TANGENT_FRACTION = 0.05;
+
 const uint MAX_CONTACTS_PER_VERTEX = 24u;
 
 // Maximum broadphase cells a single triangle may be inserted into (2 per axis).
@@ -461,9 +475,16 @@ bool usable(vec3 v) {
     return all(lessThan(abs(v), vec3(1.0e5)));
 }
 
-// The table size 10007 here and in pass 2 MUST match TABLE_SIZE in clothSimDispatch.gd.
+// The table's size is whatever the dispatcher allocated, read from the buffer itself, so the two
+// can never disagree. A fixed size fits only one resolution: 10007 slots suits the default cloth's
+// ~7,400 triangles, about 2 entries per slot, but a 116k-triangle stress cloth gets about 35 per
+// slot, so each vertex walks ~1,000 entries, hits MAX_NODE_VISITS and drops contacts.
+uint hash_table_size() {
+    return uint(cell_heads.length());
+}
+
 uint calculate_hash(ivec3 cell) {
-    return (uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u) % 10007u;
+    return (uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u) % hash_table_size();
 }
 
 // Fixed-point atomic accumulation to prevent data write races
@@ -530,7 +551,32 @@ void main() {
             }
         }
 
-        vec3 next_pos = x_curr + ((x_curr - x_prev) * 0.98) + (total_accel * params.delta_time * params.delta_time);
+        // AIR DRAG. Air pushes on a patch along its normal, in proportion to the square of how fast
+        // it moves through its own plane: falling flat it catches a lot of air, edge-on it slices
+        // through, and that difference is what makes cloth tilt, glide and flutter as it falls.
+        //
+        // In Verlet form the timestep cancels. Drag acceleration -k|v_n|v_n over one step changes
+        // the step's displacement d by -k|v_n|v_n dt^2 = -k|d_n|d_n, so d's normal part loses the
+        // fraction k*|d_n| of itself -- capped at all of it, so a step can slow to a stop but never
+        // reverse -- and that holds at any substep count. Sidedness does not matter: d_n*|d_n|
+        // times n is the same force whichever way the normal points.
+        vec3 disp = x_curr - x_prev;
+        float air_k = cloth_air_drag[uint(max(rest_positions[idx].w, 0.0))];
+        if (air_k > 0.0) {
+            vec3 n_air = vec3(tangents_final[idx * 6u + 3u],
+                              tangents_final[idx * 6u + 4u],
+                              tangents_final[idx * 6u + 5u]);
+            // False for the zero vector before the first frame has finished, and for NaN, which
+            // the finalize pass produces for a vertex whose faces cancel.
+            if (dot(n_air, n_air) > 0.5) {
+                float d_n = dot(disp, n_air);
+                vec3 d_t = disp - n_air * d_n;
+                disp -= n_air * (d_n * min(air_k * abs(d_n), 1.0));
+                disp -= d_t * min(AIR_TANGENT_FRACTION * air_k * length(d_t), 1.0);
+            }
+        }
+
+        vec3 next_pos = x_curr + (disp * 0.98) + (total_accel * params.delta_time * params.delta_time);
         pos_current[idx] = vec4(next_pos, current_data.w);
         pos_previous[idx] = vec4(x_curr, current_data.w);
     }
@@ -679,7 +725,7 @@ void main() {
     // PASS 2, 3: ATOMIC SPATIAL HASHING
     // ---------------------------------------------------------
     else if (params.pass_type == 2.0) {
-        if (idx < 10007u) cell_heads[idx] = 0xFFFFFFFFu;
+        if (idx < hash_table_size()) cell_heads[idx] = 0xFFFFFFFFu;
     }
     else if (params.pass_type == 3.0) {
         if (idx >= uint(params.padded_e_count)) return;

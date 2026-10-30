@@ -21,6 +21,11 @@ public partial class IKSolverTwoTargetChain : IKSolverBase
 	[Export] public int LookAtIterations = 4;     // CCD passes per frame (more = tighter aim)
 	[Export(PropertyHint.Range, "0,1,0.01")] public float NeckWeight = 0.5f; // neck's share of the YAW (head does the rest + all pitch)
 	[Export] public float MaxLookAngle = 80f;     // clamp: can't aim more than this from the rest forward (no looking behind)
+	// LEVEL the eyes after aiming: roll the head about its gaze axis so its up matches the character's up. The aim only
+	// fixes DIRECTION, so a chest that's yawed + pitched (sword swing) hands its roll to the head as a tilt. Rolling about
+	// the gaze axis can't change where it looks. 1 = fully level, 0 = off (head inherits the chest's roll).
+	[Export(PropertyHint.Range, "0,1,0.01")] public float HeadLevelWeight = 1f;
+	[Export] public Vector3 HeadUpAxisLocal = new Vector3(0, 1, 0); // the head bone's up axis (its own frame)
 	private bool _gazeCaptured = false;
 	private Transform3D _gazeLocal = Transform3D.Identity; // GazeNode baked relative to the head bone
 
@@ -139,6 +144,20 @@ public partial class IKSolverTwoTargetChain : IKSolverBase
 					Skeleton.ForceUpdateAllBoneTransforms();
 				}
 			}
+		}
+
+		// LEVEL: remove the roll the head inherited from a yawed+pitched chest. Roll = the angle, measured about the gaze
+		// axis, between the head's up and the character's up. Fades out as the gaze nears vertical (roll is ill-defined there).
+		if (HeadLevelWeight > 0f)
+		{
+			var (_, fwd) = Gaze(headId);
+			Vector3 charUp = Skeleton.GlobalTransform.Basis.Y.Normalized();
+			Basis hb = (Skeleton.GlobalTransform * Skeleton.GetBoneGlobalPose(headId)).Basis.Orthonormalized();
+			Vector3 headUp = (hb * HeadUpAxisLocal).Normalized();
+			float fade = Mathf.Clamp((1f - Mathf.Abs(fwd.Dot(charUp))) * 4f, 0f, 1f);
+			float roll = SignedAngleAbout(headUp, charUp, fwd);
+			ApplyLocalAxisAngle(headId, fwd, roll * HeadLevelWeight * fade);
+			Skeleton.ForceUpdateAllBoneTransforms();
 		}
 
 		if (DebugOn)

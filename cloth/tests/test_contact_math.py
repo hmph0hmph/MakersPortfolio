@@ -1082,6 +1082,47 @@ for f, want_deg in ((0.7, 91.1), (0.5, 120.0), (0.3, 145.1)):
     check(f"curvature floor: {f} caps the bend near {want_deg:.0f} degrees",
           abs(deg - want_deg) < 1.0, f"{deg:.1f} degrees")
 
+
+# ---------------------------------------------------------------- 18. air drag (pass 0)
+# Mirrors pass 0: each step's displacement d loses k*|d_n| of its normal part, capped at all of it,
+# and AIR_TANGENT_FRACTION*k*|d_t| of its tangential part. The timestep cancels, so the rule must
+# land on the same terminal speed at any substep count -- which only holds with the integrator's
+# own 0.98 damping removed, since THAT is applied per substep.
+AIR_TANGENT_FRACTION = 0.05
+
+def air_fall(vt, substeps, seconds=4.0, tilt_deg=0.0, damping=0.98):
+    k = 0.0 if vt <= 0 else 9.81 / vt**2
+    dt = (1.0 / 60.0) / substeps
+    n = (math.sin(math.radians(tilt_deg)), math.cos(math.radians(tilt_deg)))
+    x, xp = [0.0, 0.0], [0.0, 0.0]
+    for _ in range(int(seconds / dt)):
+        d = [x[0] - xp[0], x[1] - xp[1]]
+        dn = d[0]*n[0] + d[1]*n[1]
+        dt_v = [d[0] - n[0]*dn, d[1] - n[1]*dn]
+        fn = min(k * abs(dn), 1.0)
+        ft = min(AIR_TANGENT_FRACTION * k * math.hypot(*dt_v), 1.0)
+        d = [d[i] - n[i]*dn*fn - dt_v[i]*ft for i in range(2)]
+        xp, x = x, [x[0] + d[0]*damping, x[1] + d[1]*damping - 9.81*dt*dt]
+    return math.hypot(x[0] - xp[0], x[1] - xp[1]) / dt
+
+for vt in (0.8, 2.3):
+    speeds = [air_fall(vt, sub, damping=1.0) for sub in (1, 2, 4)]
+    check(f"air drag: settles at the set {vt} m/s at 1, 2 and 4 substeps (no 0.98 damping)",
+          all(abs(v - vt) < 0.01 * vt for v in speeds), ", ".join(f"{v:.3f}" for v in speeds))
+
+flat, edge = air_fall(0.8, 2, tilt_deg=0.0), air_fall(0.8, 2, tilt_deg=90.0)
+check("air drag: an edge-on patch falls several times faster than a flat one",
+      edge > 2.5 * flat, f"flat {flat:.2f} m/s, edge-on {edge:.2f} m/s")
+
+v = air_fall(0.001, 1, seconds=1.0)
+check("air drag: an absurd coefficient slows to one step of gravity, never reverses or explodes",
+      math.isfinite(v) and abs(v - 9.81 / 60.0) < 1e-6, f"{v:.4f} m/s")
+
+# With no drag only the 0.98 damping limits the fall, at g*dt/0.02 -- 4.09 m/s at 2 substeps.
+v0 = air_fall(0.0, 2)
+check("air drag: 0 means no drag, leaving only the integrator's 0.98 damping",
+      abs(v0 - 9.81 * (1.0 / 120.0) / 0.02) < 0.01, f"{v0:.3f} m/s")
+
 print("\nFAILURES:", failures)
 
 raise SystemExit(1 if failures else 0)

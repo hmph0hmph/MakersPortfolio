@@ -21,7 +21,7 @@ The physics runs on a low-resolution mesh. These files wrap a high-resolution re
 
 | File | What it does |
 |---|---|
-| `clothInstance.gd` | One per cloth. Holds the physics mesh (default: a 0.5 m plane, 60×60 subdivisions), the render mesh and material, spawn point, and per-cloth settings (`friction`, `bend_compliance`, `curvature_floor`), which the dispatcher packs into a per-cloth buffer. Also keeps the render mesh from being culled: Godot thinks it never left its spawn point, so its bounding box is re-centred on the camera every frame (capped at 50 m, so directional shadows keep their resolution). |
+| `clothInstance.gd` | One per cloth. Holds the physics mesh (default: a 0.5 m plane, 60×60 subdivisions, both adjustable), the render mesh and material, spawn point, a `target_scale` that fits the render mesh to the physics mesh without re-exporting it, and per-cloth settings (`friction`, `bend_compliance`, `curvature_floor`, `air_terminal_speed`), which the dispatcher packs into per-cloth buffers. Also keeps the render mesh from being culled: Godot thinks it never left its spawn point, so its bounding box is re-centred on the camera every frame (capped at 50 m, so directional shadows keep their resolution). |
 | `clothPin3D.gd` | A grab point. When `active` turns on, a compute pass binds every cloth vertex within `radius` to the pin's transform; turning it off releases them. Pins can move and rotate while holding cloth. |
 | `cloth_force_effector.gd` | A box volume with an `acceleration` vector (wind, pushes), collected by group and applied to cloth inside it. |
 
@@ -62,6 +62,11 @@ per iteration among competing constraints does not converge); only 0.7 removed i
 while 0.3 and 0.5 made them slightly worse, which is not understood; and residual motion rises
 roughly 15–35% at every setting. Rigid bending reaches zero intersections with four times less motion and
 no floor at all, so the floor is only worth using to keep soft, silk-like folds.
+
+**`air_terminal_speed`** — air drag, set as the speed the cloth would settle at falling flat (0 = off;
+rough estimates from fabric weight: silk 0.8 m/s, cotton shirt 1.4, denim 2.3, rug 5). The drag pushes
+only along the surface normal, so the same cloth falls several times faster edge-on than flat,
+which is what makes it tilt, glide and flutter.
 
 **`friction`** — two surfaces in contact use the average of their coefficients; for a collider,
 the other coefficient comes from its PhysicsMaterial. 0 is frictionless; real fabric is around 0.3–0.8.

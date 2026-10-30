@@ -39,8 +39,13 @@ float rand(vec2 p) {
     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
 }
 // Analytical anti-aliasing helpers
+// Debug, for before/after shots of the moire fixes: true forces both helpers onto their single-
+// point-sample path (no coverage blend) and also switches off the other moire fades -- the
+// traditional group averaging (macro_fade), the glass mullion fade (shaft_fade), the spandrel/strip
+// darkening fade and the ceiling seam fade. Toggled on every building material by K.
+uniform bool debug_disable_aa = false;
 float analytic_pulse(float x, float dx, float period, float pulse_start, float pulse_end) {
-    if (dx < 0.001) {
+    if (dx < 0.001 || debug_disable_aa) {
         float x_mod = mod(x, period);
         return (x_mod >= pulse_start && x_mod <= pulse_end) ? 1.0 : 0.0;
     }
@@ -63,7 +68,7 @@ float analytic_pulse(float x, float dx, float period, float pulse_start, float p
     return (overlap_first + overlap_last + overlap_full) / dx;
 }
 float analytic_box(float x, float dx, float box_min, float box_max) {
-    if (dx < 0.001) return (x >= box_min && x <= box_max) ? 1.0 : 0.0;
+    if (dx < 0.001 || debug_disable_aa) return (x >= box_min && x <= box_max) ? 1.0 : 0.0;
     float x0 = x - dx/2.0;
     float x1 = x + dx/2.0;
     float overlap = clamp(x1, box_min, box_max) - clamp(x0, box_min, box_max);
@@ -485,7 +490,7 @@ void fragment() {
                         // a moire pattern. As the shafts open up, the interior mapping runs across them,
                         // so the room shows continuously through non-wall mullions - while wall-aligned
                         // mullions still read as a break, since the room box changes from side to side.
-                        float shaft_fade = clamp((dist - 40.0) / 310.0, 0.0, 1.0);
+                        float shaft_fade = debug_disable_aa ? 0.0 : clamp((dist - 40.0) / 310.0, 0.0, 1.0);
                         mask_x = mix(mask_x, 1.0, shaft_fade);
                         mask_y = mix(mask_y, 1.0, shaft_fade);
 
@@ -520,7 +525,7 @@ void fragment() {
                         vec3 shaft_rainbow = sfinal_rainbow * 0.9;
                         
                         float transparency_fade = clamp((dist - 60.0) / 260.0, 0.0, 1.0);
-                        window_darken = mix(window_darken, 1.0, transparency_fade);
+                        if (!debug_disable_aa) window_darken = mix(window_darken, 1.0, transparency_fade);
                         ALBEDO = mix(shaft_rainbow * window_darken, final_rainbow * window_darken, glass_mask);
 
                         // --- INTERIOR MAPPING (Object Space Grid) ---
@@ -989,7 +994,7 @@ void fragment() {
                                 float seam = min(min(gx, 1.0 - gx), min(gz, 1.0 - gz));
                                 // Fade the seam darkening out from 30m to 100m so the ceiling grid
                                 // dissolves with distance (avoids shimmering fine lines far away).
-                                float ceil_seam_fade = clamp((dist - 30.0) / 70.0, 0.0, 1.0);
+                                float ceil_seam_fade = debug_disable_aa ? 0.0 : clamp((dist - 30.0) / 70.0, 0.0, 1.0);
                                 if (seam < 0.04) room_color *= mix(0.5, 1.0, ceil_seam_fade);
                             }
 
@@ -1240,7 +1245,7 @@ void fragment() {
                                 float offset_x = H - x;
                                 float analytical_macro_coverage = analytic_pulse(offset_x, dx, macro_cycle, 0.0, avg_G_w);
                                 
-                                float macro_fade = clamp((dx - 0.25) / 0.75, 0.0, 1.0);
+                                float macro_fade = debug_disable_aa ? 0.0 : clamp((dx - 0.25) / 0.75, 0.0, 1.0);
                                 
                                 float final_group_coverage = mix(float(in_group), analytical_macro_coverage, macro_fade);
                                 float final_gap_coverage = 1.0 - final_group_coverage;

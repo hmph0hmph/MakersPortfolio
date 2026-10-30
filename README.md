@@ -45,7 +45,8 @@ one does, along with the reasoning behind the per-cloth settings.
 
 Pure GDScript + GLSL compute on Godot's `RenderingDevice`; no engine modules. One dispatcher
 (`clothSimDispatch.gd`) owns the GPU buffers and runs a fixed sequence of compute passes
-(`clothCompute.glsl`) per substep: integrate → self-collision broadphase (spatial hash) →
+(`clothCompute.glsl`) per substep: integrate (gravity, effectors, and air drag that depends on which
+way the surface faces) → self-collision broadphase (a spatial hash sized to the mesh) →
 point-triangle (including edge/corner) and edge-edge contact detection → repeated iterations of
 stretch/bend constraints (XPBD), collider and floor contacts, and contact solve and averaging →
 velocity bookkeeping.
@@ -114,6 +115,24 @@ cloth built on Verlet integration and basic constraint iterations.
   repeated trials at different settings. The CPU test mirrors couldn't reproduce what the GPU did at
   the real mesh's resolution, so they were only a first check.
 
+### Final cleanup (October 2026)
+
+These changes went in late because recording the portfolio videos was the first long testing on an
+RTX 4070, where problems showed up that the slow integrated GPU had hidden:
+
+- **Large cloth was far too slow.** Stress-testing much bigger cloths showed the new collision code
+  scaling badly. The cause was the broadphase hash table's fixed size, which overloaded every slot
+  on a big mesh; it is now sized to the mesh, which is what lets the 57,600-vertex test run.
+- **Air drag.** My idea: limiting velocity with a form of drag reduces collision clipping at high
+  speed. The drag pushes only along the surface normal, so cloth falls several times faster edge-on
+  than flat, which also makes it tilt, glide and flutter.
+- **"Quakes" in settled cloth.** At the 4070's frame rate, occasional bursts appeared where motion
+  switched region contacts on, which caused more motion. The integrated GPU's low frame rate had
+  masked this. Region-contact strength now rises slowly and falls quickly, so a short burst the
+  cloth causes itself can't keep the contacts on. I also noticed bigger cloth settled less easily,
+  so the intersection thresholds became a percentage of the cloth's vertices instead of a fixed
+  count.
+
 ## City generation
 
 **Roads** (`cityGentest2.cs`, with `RoadNode`/`RoadEdge` in `cityGentest.cs`):
@@ -147,8 +166,10 @@ overscan computed on the CPU so the warped image never shows its edges.
 
 I wanted to attempt city generation for a game. The city had to be able to infinitely generate and
 smoothly transition, have unique buildings, and "feel" like a massive, unending futuristic city as
-the player explores it. I was partly inspired by Tokyo-3 from Neon Genesis Evangelion and Night City
-from Cyberpunk: Edgerunners.
+the player explores it. I was partly inspired by Tokyo-3 from Neon Genesis Evangelion, the city of
+Ghost in the Shell, Night City from Cyberpunk: Edgerunners, and the visuals of Neverness to
+Everness, whose look into lit rooms behind a building's glass was the main reference for my fake
+interiors.
 
 ### My role
 
@@ -194,15 +215,17 @@ with exact numbers.
   texture): compute what fraction of the pixel's footprint is window and blend the window and wall
   colors by that fraction, instead of supersampling. That analytic blur cut the shimmer a lot at
   medium range. For the rest I attacked the pattern itself:
+  - on grouped traditional windows, as a pixel's footprint approaches a window's width, each group's
+    separate windows fade into one flat average coverage (window width over window plus gap), taking
+    the mip-map idea one level further;
   - ribbon towers put windows on every other doubled floor, because if there is no high-frequency
     pattern to lose, there is nothing to alias;
-  - section heights snap to multiples of four floors, so a section never ends partway through a
-    window;
-  - the transition from the detailed to the flat building mesh finishes before the switch, so the
-    recesses don't pop;
-  - after tracing a flickering dashed line on glass grooves to a squashed reflection of the sun
-    along the crease between faces (specular aliasing), I replaced the normal-mapped grooves with a
-    slightly different material color that fades with distance.
+  - on glass towers, detail too fine to survive at range fades out with distance: the mullion
+    grid opens up so the interior shows through, the darker spandrel strips fade to plain glass, and
+    the ceiling-tile seams inside the fake rooms dissolve.
+
+  Every fix works per pixel within a single frame, with no temporal anti-aliasing, which would fight
+  graphical effects I planned to add later.
 
 - **The road connectivity test.** Once the road graph was built from the drawn streets and split
   incrementally as each new hex loaded, I needed to see where streets were actually connected in the
@@ -422,7 +445,7 @@ How the projects led into each other:
 8. **Making the upper body responsive** led to a hand-built active ragdoll, which led to the learned
    ragdoll.
 9. **Beginning of senior year:** I returned to the cloth, a second period of work in which I made it
-   handle self-collision far better.
+   handle self-collision far better, then scaled it up to large meshes and added air drag.
 
 ## How I worked with AI
 
@@ -473,6 +496,12 @@ Each project's "My role" section says specifically what came from me.
 - Ray–triangle intersection (the cloth's intersection counter) — Möller and Trumbore (1997).
 - Physics engine — Jolt Physics (Jorrit Rouwe).
 - Character rig — Mixamo (Adobe); the ragdoll and center-of-mass code use its standard bone names.
+- Sword model — "Chinese Miao Dao（苗刀）, end of Qing dynasty" by leeeck, Sketchfab (CC BY 4.0).
+- City skybox — Sky 05, Free Stylized (freestylized.com), royalty-free; the site notes its skies are
+  made partly with generative AI.
+- A few utility textures (the city's glass normal and roughness maps, the character scene's greybox
+  grid textures) came from free online texture sources; I didn't record which.
+- All other models, including the cloth demo's shirt and cloth meshes, are my own.
 - Debug visualization — Debug Draw 3D, Dmitriy Salnikov (MIT license), used for the in-game IK, center-of-mass and balance debug drawing.
 
 ---

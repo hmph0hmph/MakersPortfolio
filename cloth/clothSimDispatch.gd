@@ -160,12 +160,26 @@ extends Node3D
 #
 # If a settled pile parks ABOVE zero_pierce -- buried folds that never clear -- this signal holds
 # the strength at a low nonzero value forever and the fade never completes. Raise zero_pierce above
-# that resting count if so.
+# that resting percentage if so; the debug line prints it beside the count.
 #
 # Costs one spatial-hash rebuild and one edge-against-triangle sweep per frame while the fade is
 # running.
-@export var region_motion_off_pierce: int = 400
-@export var region_motion_zero_pierce: int = 50
+# PERCENT of the cloth's vertices, not a raw count. For the same amount of crumpling, the number of
+# intersections grows with the size of the cloth, so a fixed count is a stricter threshold the
+# bigger the cloth: on a 4x cloth, 400 intersections is the same crumpling as 100 on the default,
+# and the strength stays up four times as long, so bigger cloth settles less easily. The defaults
+# equal 400 and 50 intersections on the default 3844-vertex cloth. The percentage is of ALL
+# vertices across every cloth, since the count is global.
+@export_range(0.0, 100.0, 0.01, "suffix:%") var region_motion_off_pierce: float = 10.4
+@export_range(0.0, 100.0, 0.01, "suffix:%") var region_motion_zero_pierce: float = 1.3
+
+# Whether the intersection count steers region-contact strength at all. Off removes BOTH of its
+# effects -- the intersection ramp above and region_motion_pierce_floor below, since the floor is
+# triggered by the count -- leaving the strength to motion alone. On by default.
+#
+# The count is still measured and still printed by the debug line, so the two configurations can be
+# compared by their intersection counts. That also means the scan it needs keeps running.
+@export var region_motion_use_pierce: bool = true
 
 # A floor the fade cannot go below while the cloth is intersecting AT ALL, however still it is and
 # however few the intersections. 0 disables it, which is the ramp's own behaviour.
@@ -185,6 +199,32 @@ extends Node3D
 # still unwinds things. If a pile parks at a count that will not clear, what is wanted is a
 # tolerance rather than a lower floor.
 @export_range(0.0, 1.0, 0.01) var region_motion_pierce_floor: float = 0.0
+
+# How fast the gated strength may change, in strength per second. 0 removes the limit in that
+# direction. Applies only in "Motion gated"; "Always on" follows region_contact_strength at once, so
+# dragging that slider for an A/B comparison still responds immediately.
+#
+# Deliberately lopsided. Seen on the real cloth: a settled pile at 0.01 jumped to 0.62 for one
+# printed frame, which is exactly what the max-motion fade gives for that frame's 6.1 mm. Region
+# contacts make the cloth move, movement raises the strength, more strength makes more movement --
+# the loop feeds itself going up just as it does going down, and the ramp alone cannot stop a burst
+# once one starts.
+#
+# The motion signals are meant to measure motion the cloth did not cause itself: a fall, a push. A
+# burst it causes itself lasts a few frames. With a slow rise it cannot follow one -- at 0.5 per
+# second, five frames at 60 Hz raise the strength by about 0.04, where that burst reached 0.62 --
+# so only a cause that KEEPS the cloth moving can climb it. Falling stays quick, so repair stops
+# soon after the cloth genuinely calms rather than lingering as jitter.
+#
+# The cost: a real new disturbance in the middle of a run, say a pin grabbing and dropping the
+# cloth, takes up to 1 / rise seconds to bring full repair. The first drop is unaffected, because
+# the strength starts at full. Inversions that form during that window are not lost, only repaired
+# later -- the intersection count keeps the target up until they clear.
+#
+# Applied to the final strength, after region_motion_pierce_floor, so the floor cannot snap on and
+# off when the intersection count flickers across zero.
+@export var region_motion_rise_per_second: float = 0.5
+@export var region_motion_fall_per_second: float = 2.0
 
 # Drop a corner/edge contact when the vertex's own surface is nearly PARALLEL to the triangle,
 # as |dot| of the two surface normals. 1.0 keeps every one of them.
@@ -452,6 +492,10 @@ var contacts_buffer: RID
 var side_cache_buffer: RID
 var cloth_bend_buffer: RID
 var cloth_curvature_buffer: RID
+var cloth_drag_buffer: RID
+# Any cloth with air drag. The tangent passes then run even without a visible model, since
+# drag reads the normals they produce.
+var _drag_active: bool = false
 var _pierce_frame: int = 0
 var _pierce_now: bool = false
 var _motion_now: bool = false
@@ -465,6 +509,8 @@ var _motion_hot: int = 0
 # first frame, before any motion has been measured.
 var _region_gain: float = 1.0
 var _region_strength_now: float = 1.0
+# What the fade and floor ask for this frame, before the rate limit; printed beside the result.
+var _region_target_now: float = 1.0
 var vertex_pins_buffer: RID
 var pin_transforms_buffer: RID
 var effectors_buffer: RID
@@ -479,7 +525,10 @@ var triangle_count: int
 var active_collider_count: int = 0
 var active_effector_count: int = 0
 const MAX_COLLIDERS: int = 64
-const TABLE_SIZE: int = 10007
+# Slots in the broadphase hash table, chosen in _initialize_gpu_data from the triangle count: 4 per
+# triangle, rounded up to a prime, never below 10007. The shader reads it back from the buffer's
+# length. A fixed size overloads large meshes; see hash_table_size() in clothCompute.glsl.
+var hash_table_size: int = 10007
 const MAX_PINS: int = 32
 const MAX_EFFECTORS: int = 32
 
@@ -765,6 +814,10 @@ func _initialize_gpu_data():
 				spatial_hash[key].append(tri)
 
 			var target_to_phys = cloth.physics_mesh_instance.global_transform.affine_inverse() * cloth.target_mesh_instance.global_transform
+			# Normals map through the INVERSE TRANSPOSE, not the plain basis. Identical for a uniform
+			# scale, but a non-uniform target_scale such as (2, 1, 2) would otherwise tilt every
+			# normal that is not axis-aligned -- a rug's bevels, a garment's curves.
+			var target_normal_basis = target_to_phys.basis.inverse().transposed()
 			var p_normals = all_p_normals[cloth_idx]
 			var p_tangents = all_p_tangents[cloth_idx]
 
@@ -772,7 +825,7 @@ func _initialize_gpu_data():
 				var tv_raw = t_verts[i]
 				var tn_raw = t_norms[i]
 				var tv = target_to_phys * tv_raw
-				var tn = (target_to_phys.basis * tn_raw).normalized()
+				var tn = (target_normal_basis * tn_raw).normalized()
 
 				var cx = int(floor(tv.x / cell_size))
 				var cz = int(floor(tv.z / cell_size))
@@ -871,6 +924,10 @@ func _initialize_gpu_data():
 	curve_data.resize(maxi(friction_data.size(), 1))
 	cloth_curvature_buffer = rd.storage_buffer_create(curve_data.to_byte_array().size(), curve_data.to_byte_array())
 
+	var drag_data = PackedFloat32Array()
+	drag_data.resize(maxi(friction_data.size(), 1))
+	cloth_drag_buffer = rd.storage_buffer_create(drag_data.to_byte_array().size(), drag_data.to_byte_array())
+
 	var empty_col_data = PackedFloat32Array()
 	empty_col_data.resize(MAX_COLLIDERS * 40)
 	collider_buffer = rd.storage_buffer_create(empty_col_data.to_byte_array().size(), empty_col_data.to_byte_array())
@@ -889,8 +946,13 @@ func _initialize_gpu_data():
 	empty_items.resize(triangle_count * MAX_CELL_INSERTIONS)
 	cell_items_buffer = rd.storage_buffer_create(empty_items.to_byte_array().size(), empty_items.to_byte_array())
 
+	# 4 slots per triangle. With swept broadphase a triangle is filed in about 3 cells, so this keeps
+	# the load under 1 entry per slot at any mesh size; a prime spreads the hash. The cap is only a
+	# guard against an absurd mesh: 2^22 slots is 16 MB.
+	hash_table_size = _next_prime(clampi(triangle_count * 4, 10007, 1 << 22))
+
 	var empty_heads = PackedInt32Array()
-	empty_heads.resize(TABLE_SIZE)
+	empty_heads.resize(hash_table_size)
 	empty_heads.fill(-1)
 	cell_heads_buffer = rd.storage_buffer_create(empty_heads.to_byte_array().size(), empty_heads.to_byte_array())
 
@@ -1009,16 +1071,18 @@ func _initialize_gpu_data():
 		def_bindings.append(_make_uniform(4, tangents_final_buffer))
 		deform_uniform_set = rd.uniform_set_create(def_bindings, deform_shader_rid, 0)
 
-		var acc_bindings = []
-		acc_bindings.append(_make_uniform(0, pos_current_buffer))
-		acc_bindings.append(_make_uniform(1, index_buffer))
-		acc_bindings.append(_make_uniform(2, tangents_accum_buffer))
-		accumulate_uniform_set = rd.uniform_set_create(acc_bindings, accumulate_shader_rid, 0)
+	# The tangent passes are built whether or not any cloth has a visible model: air drag reads the
+	# normals they produce, and a physics-only cloth can have drag.
+	var acc_bindings = []
+	acc_bindings.append(_make_uniform(0, pos_current_buffer))
+	acc_bindings.append(_make_uniform(1, index_buffer))
+	acc_bindings.append(_make_uniform(2, tangents_accum_buffer))
+	accumulate_uniform_set = rd.uniform_set_create(acc_bindings, accumulate_shader_rid, 0)
 
-		var fin_bindings = []
-		fin_bindings.append(_make_uniform(0, tangents_accum_buffer))
-		fin_bindings.append(_make_uniform(1, tangents_final_buffer))
-		finalize_uniform_set = rd.uniform_set_create(fin_bindings, finalize_shader_rid, 0)
+	var fin_bindings = []
+	fin_bindings.append(_make_uniform(0, tangents_accum_buffer))
+	fin_bindings.append(_make_uniform(1, tangents_final_buffer))
+	finalize_uniform_set = rd.uniform_set_create(fin_bindings, finalize_shader_rid, 0)
 
 func _register_edge(v1, v2, vertices, map, unique_list, global_offset, transform: Transform3D, bend: bool = false):
 	# `bend` marks the two-hop links -- shear (quad diagonals that are not triangle edges) and
@@ -1076,6 +1140,19 @@ func _update_cloth_friction():
 		curve.append(cloth.curvature_floor if "curvature_floor" in cloth else 0.0)
 	var curve_bytes = curve.to_byte_array()
 	rd.buffer_update(cloth_curvature_buffer, 0, curve_bytes.size(), curve_bytes)
+
+	# Air drag, same indexing, live-tunable. The shader wants the coefficient k = g / v^2 for a
+	# terminal speed v; standard gravity rather than the scene's, so drag does not vanish in a
+	# zero-gravity scene.
+	var drag = PackedFloat32Array()
+	_drag_active = false
+	for cloth in cloth_instances:
+		var v = cloth.air_terminal_speed if "air_terminal_speed" in cloth else 0.0
+		drag.append(9.81 / (v * v) if v > 0.0 else 0.0)
+		if v > 0.0:
+			_drag_active = true
+	var drag_bytes = drag.to_byte_array()
+	rd.buffer_update(cloth_drag_buffer, 0, drag_bytes.size(), drag_bytes)
 
 func _update_colliders():
 	var nodes = get_tree().get_nodes_in_group("cloth_colliders")
@@ -1175,6 +1252,8 @@ func _create_uniform_set(edge_buf: RID) -> RID:
 	bindings.append(_make_uniform(22, cloth_bend_buffer))
 	bindings.append(_make_uniform(23, owner_tri_buffer))
 	bindings.append(_make_uniform(24, cloth_curvature_buffer))
+	bindings.append(_make_uniform(25, cloth_drag_buffer))
+	bindings.append(_make_uniform(26, tangents_final_buffer))
 	return rd.uniform_set_create(bindings, shader_rid, 0)
 
 func _make_uniform(binding: int, id: RID, type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER) -> RDUniform:
@@ -1203,6 +1282,24 @@ func _region_fade(v: float, zero_at: float, full_at: float) -> float:
 		return 1.0 if v > zero_at else 0.0
 	return clampf((v - zero_at) / (full_at - zero_at), 0.0, 1.0)
 
+
+func _region_limit_rate(current: float, target: float, dt: float) -> float:
+	# Moves toward the target by at most rise or fall per second; a rate of 0 means no limit.
+	if target > current:
+		if region_motion_rise_per_second <= 0.0:
+			return target
+		return minf(target, current + region_motion_rise_per_second * dt)
+	if region_motion_fall_per_second <= 0.0:
+		return target
+	return maxf(target, current - region_motion_fall_per_second * dt)
+
+
+func _pierce_percent() -> float:
+	# The intersection count as a percentage of every vertex being simulated, so the thresholds mean
+	# the same amount of crumpling whatever the size of the cloth.
+	return 100.0 * float(_pierce_count) / float(maxi(vertex_count, 1))
+
+
 func _region_gain_from_motion() -> float:
 	# Before the first measurement comes back, full strength: the drop is when inversions form and
 	# is exactly when the repair must not be missing.
@@ -1210,11 +1307,34 @@ func _region_gain_from_motion() -> float:
 		return 1.0
 	# The largest of the three fades, so any signal still reading "work remains" keeps the repair
 	# alive -- two symptoms of motion, and the intersection count, which is the problem itself.
+	var pierce_fade = 0.0
+	if region_motion_use_pierce:
+		pierce_fade = _region_fade(_pierce_percent(), region_motion_zero_pierce,
+								   region_motion_off_pierce)
 	return maxf(maxf(
 		_region_fade(_motion_max_mm, region_motion_zero_max_mm, region_motion_off_max_mm),
 		_region_fade(_motion_mean_mm, region_motion_zero_mean_mm, region_motion_off_mean_mm)),
-		_region_fade(float(_pierce_count), float(region_motion_zero_pierce),
-					 float(region_motion_off_pierce)))
+		pierce_fade)
+
+
+func _next_prime(n: int) -> int:
+	var c = n | 1
+	while not _is_prime(c):
+		c += 2
+	return c
+
+
+func _is_prime(c: int) -> bool:
+	if c < 2:
+		return false
+	if c % 2 == 0:
+		return c == 2
+	var d = 3
+	while d * d <= c:
+		if c % d == 0:
+			return false
+		d += 2
+	return true
 
 func _get_push_constants(delta: float, pass_type: float, e_count: float, iter: float, _unused_j: float, disp_scale: float, padded_e_count: float, target_pin_id: float = -1.0, aux_radius: float = 0.0) -> PackedByteArray:
 	var arr = PackedFloat32Array([
@@ -1288,16 +1408,20 @@ func _physics_process(delta):
 	# outright.
 	_region_gain = _region_gain_from_motion() if _motion_now else 1.0
 	var region_master = clampf(region_contact_strength, 0.0, 1.0)
-	_region_strength_now = region_master * _region_gain
+	var region_target = region_master * _region_gain
 	# The floor is a minimum on the strength that actually reaches the solver, not on the fade:
 	# "at least this much repair while anything is still intersecting" is about the final amount,
 	# and the final amount is what region_contact_strength scales and what the debug line prints.
 	# Capped by region_contact_strength, which stays a ceiling -- a floor above the ceiling would
 	# be one setting quietly overriding another.
-	if _motion_now and _pierce_count > 0:
-		_region_strength_now = maxf(_region_strength_now,
-									minf(region_motion_pierce_floor, region_master))
-	_region_strength_now = clampf(_region_strength_now, 0.0, 1.0)
+	if _motion_now and region_motion_use_pierce and _pierce_count > 0:
+		region_target = maxf(region_target, minf(region_motion_pierce_floor, region_master))
+	_region_target_now = clampf(region_target, 0.0, 1.0)
+	# Rate-limited only when gated; see region_motion_rise_per_second.
+	if _motion_now:
+		_region_strength_now = _region_limit_rate(_region_strength_now, _region_target_now, delta)
+	else:
+		_region_strength_now = _region_target_now
 
 	if _pierce_now:
 		# pos_deltas[7] is slot 7 of vertex 0: passes 9 and 10 touch 0..6 and 8..11 only, so
@@ -1309,11 +1433,11 @@ func _physics_process(delta):
 		# shows exactly the numbers the fade acted on, which is the point of it.
 		if _scan_pending:
 			var sub_dt_dbg = delta / float(maxi(1, substeps))
-			print("[cloth] intersections %d | motion mean %.4f mm (%.4f m/s) max %.4f mm | over 1mm: %d of %d vertices%s"
-				% [_pierce_count, _motion_mean_mm, (_motion_mean_mm / 1000.0) / sub_dt_dbg, _motion_max_mm,
+			print("[cloth] intersections %d (%.2f%%) | motion mean %.4f mm (%.4f m/s) max %.4f mm | over 1mm: %d of %d vertices%s"
+				% [_pierce_count, _pierce_percent(), _motion_mean_mm, (_motion_mean_mm / 1000.0) / sub_dt_dbg, _motion_max_mm,
 				   _motion_hot, vertex_count,
-				   (" | region strength %.2f = fade %.2f x %.2f"
-					% [_region_strength_now, _region_gain,
+				   (" | region strength %.2f (target %.2f = fade %.2f x %.2f)"
+					% [_region_strength_now, _region_target_now, _region_gain,
 					   clampf(region_contact_strength, 0.0, 1.0)]) if _motion_now else ""])
 
 	if scan_now:
@@ -1369,8 +1493,8 @@ func _physics_process(delta):
 		rd.compute_list_add_barrier(cl)
 
 		if self_collision_enabled and (redetect_each_substep or _sub == 0):
-			rd.compute_list_set_push_constant(cl, _get_push_constants(sub_dt, 2.0, TABLE_SIZE, 0.0, 0.0, 0.0, float(triangle_count)), 80)
-			rd.compute_list_dispatch(cl, ceil(float(TABLE_SIZE) / 64.0), 1, 1)
+			rd.compute_list_set_push_constant(cl, _get_push_constants(sub_dt, 2.0, hash_table_size, 0.0, 0.0, 0.0, float(triangle_count)), 80)
+			rd.compute_list_dispatch(cl, ceil(float(hash_table_size) / 64.0), 1, 1)
 			rd.compute_list_add_barrier(cl)
 
 			rd.compute_list_set_push_constant(cl, _get_push_constants(sub_dt, 3.0, triangle_count, 0.0, 0.0, det_scale, float(triangle_count), -1.0, aux_flags), 80)
@@ -1452,8 +1576,8 @@ func _physics_process(delta):
 		# Rebuild the spatial hash on the FINAL positions first. The one detection left behind
 		# was built at the start of the last substep, so triangles have moved since and the
 		# count would miss intersections; it may also not exist at all if self collision is off.
-		rd.compute_list_set_push_constant(cl, _get_push_constants(delta, 2.0, TABLE_SIZE, 0.0, 0.0, 0.0, float(triangle_count)), 80)
-		rd.compute_list_dispatch(cl, ceil(float(TABLE_SIZE) / 64.0), 1, 1)
+		rd.compute_list_set_push_constant(cl, _get_push_constants(delta, 2.0, hash_table_size, 0.0, 0.0, 0.0, float(triangle_count)), 80)
+		rd.compute_list_dispatch(cl, ceil(float(hash_table_size) / 64.0), 1, 1)
 		rd.compute_list_add_barrier(cl)
 		rd.compute_list_set_push_constant(cl, _get_push_constants(delta, 3.0, triangle_count, 0.0, 0.0, 1.0, float(triangle_count), -1.0, 0.0), 80)
 		rd.compute_list_dispatch(cl, tri_workgroups_x, 1, 1)
@@ -1472,7 +1596,8 @@ func _physics_process(delta):
 		rd.compute_list_dispatch(cl, vertex_workgroups_x, 1, 1)
 		rd.compute_list_add_barrier(cl)
 
-	if target_vertex_count > 0:
+	# Normals: for drawing the visible model, and for next frame's air drag.
+	if target_vertex_count > 0 or _drag_active:
 		rd.compute_list_bind_compute_pipeline(cl, accumulate_pipeline_rid)
 		rd.compute_list_bind_uniform_set(cl, accumulate_uniform_set, 0)
 		var pc_acc = PackedFloat32Array([float(triangle_count)]).to_byte_array()
@@ -1487,6 +1612,7 @@ func _physics_process(delta):
 		rd.compute_list_dispatch(cl, ceil(float(vertex_count) / 64.0), 1, 1)
 		rd.compute_list_add_barrier(cl)
 
+	if target_vertex_count > 0:
 		rd.compute_list_bind_compute_pipeline(cl, deform_pipeline_rid)
 		rd.compute_list_bind_uniform_set(cl, deform_uniform_set, 0)
 
@@ -1501,4 +1627,3 @@ func _physics_process(delta):
 		rd.compute_list_add_barrier(cl)
 
 	rd.compute_list_end()
-
